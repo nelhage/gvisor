@@ -41,7 +41,6 @@
 package fdbased
 
 import (
-	"errors"
 	"fmt"
 
 	"golang.org/x/sys/unix"
@@ -228,6 +227,9 @@ type Options struct {
 	// TODO(b/240191988): Use multiple sockets.
 	// TODO(b/240191988): How do we handle the MTU issue?
 	AFXDPFD int
+
+	// InterfaceIndex is the interface index of the underlying device.
+	InterfaceIndex int
 }
 
 // fanoutID is used for AF_PACKET based endpoints to enable PACKET_FANOUT
@@ -295,8 +297,8 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 		}
 	}
 
-	// Increment fanoutID to ensure that we don't re-use the same fanoutID for
-	// the next endpoint.
+	// Increment fanoutID to ensure that we don't re-use the same fanoutID
+	// for the next endpoint.
 	fid := fanoutID.Add(1)
 
 	// Create per channel dispatchers.
@@ -320,9 +322,24 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 				e.gsoMaxSize = opts.GSOMaxSize
 			}
 		}
+
+		// TODO(b/240191988): Remove this check once we support
+		// multiple AF_XDP sockets.
+		if opts.AFXDPFD >= 0 {
+			continue
+		}
+
 		inboundDispatcher, err := createInboundDispatcher(e, fd, isSocket, fid)
 		if err != nil {
 			return nil, fmt.Errorf("createInboundDispatcher(...) = %v", err)
+		}
+		e.inboundDispatchers = append(e.inboundDispatchers, inboundDispatcher)
+	}
+
+	if opts.AFXDPFD >= 0 {
+		inboundDispatcher, err := newAFXDPDispatcher(opts.AFXDPFD, e, opts.InterfaceIndex)
+		if err != nil {
+			return nil, fmt.Errorf("newAFXDPDispatcher(%d, %+v) = %v", opts.AFXDPFD, e, err)
 		}
 		e.inboundDispatchers = append(e.inboundDispatchers, inboundDispatcher)
 	}
@@ -385,8 +402,8 @@ func createInboundDispatcher(e *endpoint, fd int, isSocket bool, fID int32) (lin
 			if err != nil {
 				return nil, fmt.Errorf("newRecvMMsgDispatcher(%d, %+v) = %v", fd, e, err)
 			}
-		case AFXDP:
-			return nil, errors.New("AFXDP not yet implemented")
+		default:
+			return nil, fmt.Errorf("unknown dispatch mode %d", e.packetDispatchMode)
 		}
 	}
 	return inboundDispatcher, nil
