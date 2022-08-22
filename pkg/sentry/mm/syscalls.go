@@ -1320,3 +1320,45 @@ func (mm *MemoryManager) EnableMembarrierRSeq() {
 func (mm *MemoryManager) IsMembarrierRSeqEnabled() bool {
 	return mm.membarrierRSeqEnabled.Load() != 0
 }
+
+// getVMAMapsEntryIntoMaps gets the a /proc/[pid]/maps entry for the vma
+// iterated by vseg.
+func (mm *MemoryManager) getVMAMapsEntryIntoMaps(ctx context.Context, vseg vmaIterator) Maps {
+	vma := vseg.ValuePtr()
+	var dev, ino uint64
+	if vma.id != nil {
+		dev = vma.id.DeviceID()
+		ino = vma.id.InodeID()
+	}
+	devMajor := uint32(dev >> devMinorBits)
+	devMinor := uint32(dev & ((1 << devMinorBits) - 1))
+
+	var pathname string
+	if vma.hint != "" {
+		pathname = vma.hint
+	} else if vma.id != nil {
+		pathname = vma.id.MappedName(ctx)
+	}
+	return Maps{
+		Address: hostarch.AddrRange{
+			Start: vseg.Start(),
+			End:   vseg.End(),
+		},
+		Permissions: vma.realPerms,
+		Offset:      vma.off,
+		DevMajor:    devMajor,
+		DevMinor:    devMinor,
+		Inode:       ino,
+		Pathname:    pathname,
+	}
+}
+
+// GetMapsData gets information for /proc/[pid]/maps.
+func (mm *MemoryManager) GetMapsData(ctx context.Context) []Maps {
+	var maps []Maps
+	var start hostarch.Addr
+	for vseg := mm.vmas.LowerBoundSegment(start); vseg.Ok(); vseg = vseg.NextSegment() {
+		maps = append(maps, mm.getVMAMapsEntryIntoMaps(ctx, vseg))
+	}
+	return maps
+}
