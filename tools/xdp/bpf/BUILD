@@ -25,3 +25,11 @@ bpf_program(
     bpf_object = "tcpdump_ebpf.o",
     visibility = ["//:sandbox"],
 )
+
+bpf_program(
+    name = "redirect_ebpf",
+    src = "redirect.ebpf.c",
+    hdrs = [],
+    bpf_object = "redirect_ebpf.o",
+    visibility = ["//:sandbox"],
+)

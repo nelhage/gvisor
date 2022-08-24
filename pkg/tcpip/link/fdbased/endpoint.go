@@ -41,7 +41,6 @@
 package fdbased
 
 import (
-	"errors"
 	"fmt"
 
 	"golang.org/x/sys/unix"
@@ -295,8 +294,8 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 		}
 	}
 
-	// Increment fanoutID to ensure that we don't re-use the same fanoutID for
-	// the next endpoint.
+	// Increment fanoutID to ensure that we don't re-use the same fanoutID
+	// for the next endpoint.
 	fid := fanoutID.Add(1)
 
 	// Create per channel dispatchers.
@@ -320,7 +319,22 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 				e.gsoMaxSize = opts.GSOMaxSize
 			}
 		}
-		inboundDispatcher, err := createInboundDispatcher(e, fd, isSocket, fid)
+
+		// TODO(b/240191988): Remove this check once we support
+		// multiple AF_XDP sockets.
+		if opts.AFXDPFD >= 0 {
+			continue
+		}
+
+		inboundDispatcher, err := createInboundDispatcher(e, fd, isSocket, fid, false)
+		if err != nil {
+			return nil, fmt.Errorf("createInboundDispatcher(...) = %v", err)
+		}
+		e.inboundDispatchers = append(e.inboundDispatchers, inboundDispatcher)
+	}
+
+	if opts.AFXDPFD >= 0 {
+		inboundDispatcher, err := createInboundDispatcher(e, opts.AFXDPFD, true, fid, true)
 		if err != nil {
 			return nil, fmt.Errorf("createInboundDispatcher(...) = %v", err)
 		}
@@ -330,7 +344,15 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 	return e, nil
 }
 
-func createInboundDispatcher(e *endpoint, fd int, isSocket bool, fID int32) (linkDispatcher, error) {
+func createInboundDispatcher(e *endpoint, fd int, isSocket bool, fID int32, afxdp bool) (linkDispatcher, error) {
+	if afxdp {
+		inboundDispatcher, err := newAFXDPDispatcher(fd, e)
+		if err != nil {
+			return nil, fmt.Errorf("newAFXDPDispatcher(%d, %+v) = %v", fd, e, err)
+		}
+		return inboundDispatcher, nil
+	}
+
 	// By default use the readv() dispatcher as it works with all kinds of
 	// FDs (tap/tun/unix domain sockets and af_packet).
 	inboundDispatcher, err := newReadVDispatcher(fd, e)
@@ -385,8 +407,8 @@ func createInboundDispatcher(e *endpoint, fd int, isSocket bool, fID int32) (lin
 			if err != nil {
 				return nil, fmt.Errorf("newRecvMMsgDispatcher(%d, %+v) = %v", fd, e, err)
 			}
-		case AFXDP:
-			return nil, errors.New("AFXDP not yet implemented")
+		default:
+			return nil, fmt.Errorf("unknown dispatch mode %d", e.packetDispatchMode)
 		}
 	}
 	return inboundDispatcher, nil

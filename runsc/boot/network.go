@@ -165,7 +165,7 @@ func (n *Network) CreateLinksAndRoutes(args *CreateLinksAndRoutesArgs, _ *struct
 		wantFDs += l.NumChannels
 	}
 	if args.AFXDP {
-		wantFDs++
+		wantFDs += 4
 	}
 	if got := len(args.FilePayload.Files); got != wantFDs {
 		return fmt.Errorf("args.FilePayload.Files has %d FDs but we need %d entries based on FDBasedLinks. AFXDP is %t", got, wantFDs, args.AFXDP)
@@ -236,13 +236,25 @@ func (n *Network) CreateLinksAndRoutes(args *CreateLinksAndRoutesArgs, _ *struct
 		// AF_PACKET.
 		AFXDPFD := -1
 		if args.AFXDP {
+			// Get the AF_XDP socket.
 			oldFD := args.FilePayload.Files[fdOffset].Fd()
-			newFD, err := unix.Dup(int(oldFD))
+			AFXDPFD, err = unix.Dup(int(oldFD))
 			if err != nil {
 				return fmt.Errorf("failed to dup AF_XDP fd %v: %v", oldFD, err)
 			}
-			AFXDPFD = newFD
 			fdOffset++
+
+			// The parent process sends several other FDs in order
+			// to keep them open and alive. These are for BPF
+			// programs and maps that, if closed, will break the
+			// dispatcher.
+			for _, fdName := range []string{"program-fd", "sockmap-fd", "link-fd"} {
+				oldFD := args.FilePayload.Files[fdOffset].Fd()
+				if _, err := unix.Dup(int(oldFD)); err != nil {
+					return fmt.Errorf("failed to dup %s with FD %d: %v", fdName, oldFD, err)
+				}
+				fdOffset++
+			}
 		}
 
 		mac := tcpip.LinkAddress(link.LinkAddress)
