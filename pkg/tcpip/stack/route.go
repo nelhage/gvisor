@@ -50,6 +50,9 @@ type Route struct {
 	// linkRes is set if link address resolution is enabled for this protocol on
 	// the route's NIC.
 	linkRes *linkResolver
+
+	// neighborEntry is something.
+	neighborEntry *neighborEntry
 }
 
 // +stateify savable
@@ -390,8 +393,19 @@ func (r *Route) resolvedFields(afterResolve func(ResolvedFieldsResult)) (RouteIn
 		linkAddressResolutionRequestLocalAddr = r.LocalAddress()
 	}
 
+	if r.neighborEntry != nil {
+		r.neighborEntry.mu.RLock()
+		switch r.neighborEntry.mu.neigh.State {
+		case Reachable, Static, Delay, Probe:
+			fields.RemoteLinkAddress = r.neighborEntry.mu.neigh.LinkAddr
+			r.neighborEntry.mu.RUnlock()
+			afterResolve(ResolvedFieldsResult{RouteInfo: fields, Err: nil})
+			return fields, nil, nil
+		}
+		r.neighborEntry.mu.RUnlock()
+	}
 	afterResolveFields := fields
-	linkAddr, ch, err := r.linkRes.getNeighborLinkAddress(r.nextHop(), linkAddressResolutionRequestLocalAddr, func(r LinkResolutionResult) {
+	entry, ch, err := r.linkRes.neigh.entry(r.nextHop(), linkAddressResolutionRequestLocalAddr, func(r LinkResolutionResult) {
 		if afterResolve != nil {
 			if r.Err == nil {
 				afterResolveFields.RemoteLinkAddress = r.LinkAddress
@@ -400,8 +414,11 @@ func (r *Route) resolvedFields(afterResolve func(ResolvedFieldsResult)) (RouteIn
 			afterResolve(ResolvedFieldsResult{RouteInfo: afterResolveFields, Err: r.Err})
 		}
 	})
+	r.neighborEntry = entry
 	if err == nil {
-		fields.RemoteLinkAddress = linkAddr
+		entry.mu.RLock()
+		fields.RemoteLinkAddress = entry.mu.neigh.LinkAddr
+		entry.mu.RUnlock()
 	}
 	return fields, ch, err
 }
